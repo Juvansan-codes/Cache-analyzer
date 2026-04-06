@@ -56,7 +56,7 @@ class SerialReader:
                     except UnicodeDecodeError:
                         logger.warning("Failed to decode serial bytes (utf-8): %r", raw_line)
                         line = raw_line.decode("utf-8", errors="replace").strip()
-                        logger.warning("Decoded serial bytes with replacement characters: %r", raw_line)
+                        logger.warning("Decoded serial bytes with replacement characters: %r", line)
                     try:
                         address = int(line)
                         if 0 <= address < self.address_range:
