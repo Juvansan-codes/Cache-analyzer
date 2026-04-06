@@ -12,6 +12,10 @@ from models import (
 class CacheEngine:
     def __init__(self, config: CacheConfig):
         self.config = config
+        if not self._is_power_of_two(config.cache_size):
+            raise ValueError("cache_size must be a power of two")
+        if not self._is_power_of_two(config.block_size):
+            raise ValueError("block_size must be a power of two")
         self.num_lines = config.cache_size
         self.block_size = config.block_size
         self.associativity = config.associativity
@@ -42,6 +46,10 @@ class CacheEngine:
 
         self._init_cache()
 
+    @staticmethod
+    def _is_power_of_two(value: int) -> bool:
+        return value > 0 and (value & (value - 1)) == 0
+
     def _init_cache(self):
         self.cache = []
         self.lru_orders = {}
@@ -70,7 +78,7 @@ class CacheEngine:
         cache_set = self.cache[set_index]
 
         for way_idx, line in enumerate(cache_set):
-            line.status = "empty" if not line.valid else "empty"
+            line.status = "empty" if not line.valid else line.status
 
         hit_way = None
         for way_idx, line in enumerate(cache_set):
