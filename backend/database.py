@@ -2,14 +2,44 @@ import aiosqlite
 import os
 import json
 import time
-from typing import List, Optional, Dict
+import asyncio
+from contextlib import asynccontextmanager
+from typing import List, Optional, Dict, Tuple
 from models import CacheConfig, SessionSummary
 
 DB_PATH = os.getenv("DB_PATH", "cache_analyzer.db")
+ACCESS_LOG_BATCH_SIZE = 25
+_pending_access_logs: List[Tuple[str, int, int, int, int, Optional[int], int, float]] = []
+_access_log_lock = asyncio.Lock()
 
+@asynccontextmanager
+async def get_connection():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        yield db
+
+
+async def flush_access_logs(force: bool = False):
+    async with _access_log_lock:
+        if not _pending_access_logs:
+            return
+        if not force and len(_pending_access_logs) < ACCESS_LOG_BATCH_SIZE:
+            return
+        batch = list(_pending_access_logs)
+        _pending_access_logs.clear()
+
+    async with get_connection() as db:
+        await db.executemany(
+            """INSERT INTO access_log
+               (session_id, address, tag, set_index, hit, evicted_address, cache_line_index, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        await db.commit()
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_connection() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
@@ -46,7 +76,8 @@ async def init_db():
 
 
 async def create_session(session_id: str, config: CacheConfig):
-    async with aiosqlite.connect(DB_PATH) as db:
+    await flush_access_logs(force=True)
+    async with get_connection() as db:
         await db.execute(
             """INSERT OR REPLACE INTO sessions 
                (session_id, mapping_type, replacement_policy, cache_size, block_size,
@@ -75,11 +106,8 @@ async def log_access(
     evicted_address: Optional[int],
     cache_line_index: int,
 ):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """INSERT INTO access_log 
-               (session_id, address, tag, set_index, hit, evicted_address, cache_line_index, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+    async with _access_log_lock:
+        _pending_access_logs.append(
             (
                 session_id,
                 address,
@@ -89,9 +117,9 @@ async def log_access(
                 evicted_address,
                 cache_line_index,
                 time.time(),
-            ),
+            )
         )
-        await db.commit()
+    await flush_access_logs(force=False)
 
 
 async def update_session_stats(
@@ -103,7 +131,8 @@ async def update_session_stats(
     miss_rate: float,
     amat: float,
 ):
-    async with aiosqlite.connect(DB_PATH) as db:
+    await flush_access_logs(force=True)
+    async with get_connection() as db:
         await db.execute(
             """UPDATE sessions SET total_accesses=?, hits=?, misses=?,
                hit_rate=?, miss_rate=?, amat=? WHERE session_id=?""",
@@ -113,7 +142,8 @@ async def update_session_stats(
 
 
 async def get_session(session_id: str) -> Optional[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    await flush_access_logs(force=True)
+    async with get_connection() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT * FROM sessions WHERE session_id=?", (session_id,)
@@ -125,7 +155,8 @@ async def get_session(session_id: str) -> Optional[Dict]:
 
 
 async def list_sessions() -> List[SessionSummary]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    await flush_access_logs(force=True)
+    async with get_connection() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT * FROM sessions ORDER BY created_at DESC LIMIT 50"
@@ -152,7 +183,8 @@ async def list_sessions() -> List[SessionSummary]:
 
 
 async def export_session_csv(session_id: str) -> Optional[str]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    await flush_access_logs(force=True)
+    async with get_connection() as db:
         db.row_factory = aiosqlite.Row
         session_cursor = await db.execute(
             "SELECT * FROM sessions WHERE session_id=?", (session_id,)
