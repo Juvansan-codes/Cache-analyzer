@@ -63,7 +63,12 @@ export function useWebSocket(sessionId: string | null) {
           return;
         }
         const eventData: CacheUpdateEvent = data;
-        if (!eventData || !eventData.event || !eventData.state || !eventData.session_id) {
+        if (
+          !eventData ||
+          eventData.event === undefined ||
+          eventData.state === undefined ||
+          eventData.session_id === undefined
+        ) {
           return;
         }
         updateFromEvent(eventData);

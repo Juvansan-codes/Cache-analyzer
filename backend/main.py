@@ -1,5 +1,4 @@
 import asyncio
-import json
 import time
 import uuid
 from typing import Dict, List, Set
@@ -47,7 +46,7 @@ def touch_session(session_id: str):
     last_activity[session_id] = time.time()
 
 
-def cleanup_stale_sessions():
+async def cleanup_stale_sessions():
     cutoff = time.time() - SESSION_TTL_SECONDS
     stale_session_ids = [sid for sid, ts in last_activity.items() if ts < cutoff]
     for session_id in stale_session_ids:
@@ -67,7 +66,7 @@ def cleanup_stale_sessions():
 async def cleanup_loop():
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        cleanup_stale_sessions()
+        await cleanup_stale_sessions()
 
 
 @asynccontextmanager
@@ -263,7 +262,7 @@ async def start_serial(session_id: str):
         except Exception:
             logger.exception("Unhandled serial loop error for session %s", session_id)
         finally:
-            cleanup_stale_sessions()
+            await cleanup_stale_sessions()
 
     task = asyncio.create_task(serial_loop())
     running_tasks[session_id] = task
@@ -279,7 +278,7 @@ async def stop_serial(session_id: str):
         running_tasks[session_id].cancel()
         del running_tasks[session_id]
     touch_session(session_id)
-    cleanup_stale_sessions()
+    await cleanup_stale_sessions()
     return {"status": "stopped"}
 
 
@@ -385,7 +384,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             connected_clients[session_id].discard(websocket)
             if not connected_clients[session_id]:
                 connected_clients.pop(session_id, None)
-        cleanup_stale_sessions()
+        await cleanup_stale_sessions()
 
 
 if __name__ == "__main__":
