@@ -1,13 +1,14 @@
 import asyncio
-import json
 import time
 import uuid
 from typing import Dict, List, Set
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field, ValidationError
 
 from models import (
     CacheConfig, CacheUpdateEvent, MappingType, ReplacementPolicy,
@@ -25,12 +26,59 @@ active_engines: Dict[str, CacheEngine] = {}
 active_serial_readers: Dict[str, SerialReader] = {}
 connected_clients: Dict[str, Set[WebSocket]] = {}
 running_tasks: Dict[str, asyncio.Task] = {}
+last_activity: Dict[str, float] = {}
+
+logger = logging.getLogger(__name__)
+SESSION_TTL_SECONDS = 3600
+CLEANUP_INTERVAL_SECONDS = 300
+
+
+class AccessRequest(BaseModel):
+    address: int = Field(..., ge=0, le=255)
+
+
+class WebSocketMessage(BaseModel):
+    type: str
+    address: int | None = Field(default=None, ge=0, le=255)
+
+
+def touch_session(session_id: str):
+    last_activity[session_id] = time.time()
+
+
+async def cleanup_stale_sessions():
+    cutoff = time.time() - SESSION_TTL_SECONDS
+    stale_session_ids = [sid for sid, ts in last_activity.items() if ts < cutoff]
+    for session_id in stale_session_ids:
+        if connected_clients.get(session_id):
+            continue
+        task = running_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+        reader = active_serial_readers.pop(session_id, None)
+        if reader:
+            reader.stop()
+        active_engines.pop(session_id, None)
+        connected_clients.pop(session_id, None)
+        last_activity.pop(session_id, None)
+
+
+async def cleanup_loop():
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        await cleanup_stale_sessions()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    cleanup_task = asyncio.create_task(cleanup_loop())
     yield
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     for reader in active_serial_readers.values():
         reader.stop()
     for task in running_tasks.values():
@@ -45,7 +93,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +107,7 @@ async def broadcast_to_session(session_id: str, data: dict):
             try:
                 await ws.send_json(data)
             except Exception:
+                logger.exception("Failed to broadcast to websocket client for session %s", session_id)
                 dead.add(ws)
         connected_clients[session_id] -= dead
 
@@ -69,6 +118,7 @@ async def create_new_session(config: CacheConfig):
     engine = CacheEngine(config)
     active_engines[session_id] = engine
     connected_clients[session_id] = set()
+    touch_session(session_id)
     await create_session(session_id, config)
     return {"session_id": session_id, "config": config.model_dump()}
 
@@ -95,16 +145,18 @@ async def get_session_info(session_id: str):
 
 
 @app.post("/api/session/{session_id}/access")
-async def manual_access(session_id: str, address: int = Query(...)):
+async def manual_access(session_id: str, address: int = Query(..., ge=0, le=255)):
     if session_id not in active_engines:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    payload = AccessRequest(address=address)
     engine = active_engines[session_id]
-    result = engine.access(address)
+    result = engine.access(payload.address)
     state = engine.get_state()
+    touch_session(session_id)
 
     await log_access(
-        session_id, address, result.tag, result.index,
+        session_id, payload.address, result.tag, result.index,
         result.hit, result.evicted_address, result.cache_line_index
     )
     await update_session_stats(
@@ -128,6 +180,7 @@ async def run_trace(session_id: str, config: TraceConfig):
     if session_id not in active_engines:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    touch_session(session_id)
     engine = active_engines[session_id]
     generator = TraceGenerator(config)
     addresses = generator.generate_batch()
@@ -182,6 +235,7 @@ async def start_serial(session_id: str):
                     break
                 result = engine.access(addr)
                 state = engine.get_state()
+                touch_session(session_id)
 
                 await log_access(
                     session_id, addr, result.tag, result.index,
@@ -204,7 +258,11 @@ async def start_serial(session_id: str):
                 final_state.amat
             )
         except asyncio.CancelledError:
-            pass
+            logger.info("Serial loop cancelled for session %s", session_id)
+        except Exception:
+            logger.exception("Unhandled serial loop error for session %s", session_id)
+        finally:
+            await cleanup_stale_sessions()
 
     task = asyncio.create_task(serial_loop())
     running_tasks[session_id] = task
@@ -219,6 +277,8 @@ async def stop_serial(session_id: str):
     if session_id in running_tasks:
         running_tasks[session_id].cancel()
         del running_tasks[session_id]
+    touch_session(session_id)
+    await cleanup_stale_sessions()
     return {"status": "stopped"}
 
 
@@ -228,6 +288,7 @@ async def reset_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     active_engines[session_id].reset()
     state = active_engines[session_id].get_state()
+    touch_session(session_id)
     await update_session_stats(session_id, 0, 0, 0, 0.0, 0.0, 1.0)
     await broadcast_to_session(
         session_id,
@@ -240,6 +301,7 @@ async def reset_session(session_id: str):
 async def get_heatmap(session_id: str):
     if session_id not in active_engines:
         raise HTTPException(status_code=404, detail="Session not found")
+    touch_session(session_id)
     return active_engines[session_id].get_heatmap()
 
 
@@ -262,6 +324,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     if session_id not in connected_clients:
         connected_clients[session_id] = set()
     connected_clients[session_id].add(websocket)
+    touch_session(session_id)
 
     try:
         if session_id in active_engines:
@@ -274,10 +337,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
         while True:
             data = await websocket.receive_text()
-            msg = json.loads(data)
+            try:
+                msg = WebSocketMessage.model_validate_json(data)
+            except ValidationError:
+                logger.warning("Invalid websocket payload for session %s", session_id)
+                continue
+            touch_session(session_id)
 
-            if msg.get("type") == "access" and session_id in active_engines:
-                address = msg.get("address", 0)
+            if msg.type == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
+            if msg.type == "access" and session_id in active_engines:
+                if msg.address is None:
+                    logger.warning("Access websocket message missing address for session %s", session_id)
+                    continue
+                address = msg.address
                 engine = active_engines[session_id]
                 result = engine.access(address)
                 state = engine.get_state()
@@ -301,12 +376,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 await broadcast_to_session(session_id, event.model_dump())
 
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket disconnected for session %s", session_id)
     except Exception:
-        pass
+        logger.exception("Unhandled websocket error for session %s", session_id)
     finally:
         if session_id in connected_clients:
             connected_clients[session_id].discard(websocket)
+            if not connected_clients[session_id]:
+                connected_clients.pop(session_id, None)
+        await cleanup_stale_sessions()
 
 
 if __name__ == "__main__":
