@@ -1,17 +1,21 @@
 import React, { useMemo } from 'react';
 import { useCacheStore } from '../store/cacheStore';
 
-export default function HeatmapGrid() {
+interface HeatmapGridProps {
+  addressBits: number;
+}
+
+export default function HeatmapGrid({ addressBits }: HeatmapGridProps) {
   const heatmap = useCacheStore((s) => s.heatmap);
 
-  const gridSize = 16;
-  const totalCells = gridSize * gridSize;
+  const addressSpaceSize = Math.pow(2, addressBits);
+  const gridSize = Math.ceil(Math.sqrt(addressSpaceSize));
 
   const { cells, maxCount } = useMemo(() => {
     let max = 0;
     const cellData: { address: number; count: number; x: number; y: number }[] = [];
 
-    for (let i = 0; i < totalCells; i++) {
+    for (let i = 0; i < addressSpaceSize; i++) {
       const count = heatmap[i] || 0;
       if (count > max) max = count;
       cellData.push({
@@ -23,7 +27,7 @@ export default function HeatmapGrid() {
     }
 
     return { cells: cellData, maxCount: max };
-  }, [heatmap]);
+  }, [heatmap, addressSpaceSize, gridSize]);
 
   const getColor = (count: number): string => {
     if (count === 0) return 'rgba(30, 41, 59, 0.8)';
@@ -42,25 +46,29 @@ export default function HeatmapGrid() {
           Memory Heatmap
         </h2>
         <span className="text-xs text-slate-500 font-mono">
-          {gridSize}×{gridSize} (0–{totalCells - 1})
+          {gridSize}×{gridSize} (0–{addressSpaceSize - 1})
         </span>
       </div>
 
-      <div
-        className="grid gap-[2px]"
-        style={{ gridTemplateColumns: `repeat(${gridSize}, 1fr)` }}
-      >
-        {cells.map((cell) => (
-          <div
-            key={cell.address}
-            className="aspect-square rounded-[3px] transition-all duration-300 hover:scale-150 hover:z-10 relative group cursor-crosshair"
-            style={{ backgroundColor: getColor(cell.count) }}
-          >
-            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-800 border border-slate-700 rounded-lg text-[10px] font-mono text-slate-200 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-20 shadow-xl">
-              addr: {cell.address} | hits: {cell.count}
-            </div>
-          </div>
-        ))}
+      <div className="rounded-lg overflow-hidden border border-slate-800/70 bg-slate-950/40">
+        <svg
+          className="w-full aspect-square"
+          viewBox={`0 0 ${gridSize} ${gridSize}`}
+          preserveAspectRatio="none"
+        >
+          {cells.map((cell) => (
+            <rect
+              key={cell.address}
+              x={cell.x}
+              y={cell.y}
+              width={1}
+              height={1}
+              fill={getColor(cell.count)}
+            >
+              <title>{`addr: ${cell.address} | hits: ${cell.count}`}</title>
+            </rect>
+          ))}
+        </svg>
       </div>
 
       <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800">

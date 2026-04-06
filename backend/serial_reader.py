@@ -1,9 +1,11 @@
 import asyncio
 import random
 import os
+import logging
 from typing import Optional, AsyncGenerator
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "")
+logger = logging.getLogger(__name__)
 
 
 class MockSerial:
@@ -48,7 +50,13 @@ class SerialReader:
 
             while self._running:
                 if self._serial.in_waiting > 0:
-                    line = self._serial.readline().decode("utf-8").strip()
+                    raw_line = self._serial.readline()
+                    try:
+                        line = raw_line.decode("utf-8").strip()
+                    except UnicodeDecodeError:
+                        logger.warning("Failed to decode serial bytes (utf-8): %r", raw_line)
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        logger.warning("Decoded serial bytes with replacement characters: %r", line)
                     try:
                         address = int(line)
                         if 0 <= address < self.address_range:

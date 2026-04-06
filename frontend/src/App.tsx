@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useCacheStore } from './store/cacheStore';
 import { useWebSocket } from './hooks/useWebSocket';
 import CacheGrid from './components/CacheGrid';
@@ -9,8 +9,14 @@ import AccessLog from './components/AccessLog';
 import HeatmapGrid from './components/HeatmapGrid';
 import ControlPanel from './components/ControlPanel';
 import { CacheConfig, TracePattern } from './types';
-
-const API_BASE = '/api';
+import {
+  createSession,
+  runTrace,
+  startSerial,
+  stopSerial,
+  resetSession,
+  getExportUrl,
+} from './api/cacheApi';
 
 export default function App() {
   const sessionId = useCacheStore((s) => s.sessionId);
@@ -22,22 +28,20 @@ export default function App() {
   const isRunning = useCacheStore((s) => s.isRunning);
   const resetState = useCacheStore((s) => s.resetState);
   const addToComparison = useCacheStore((s) => s.addToComparison);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const { sendAccess } = useWebSocket(sessionId);
 
   const handleCreateSession = useCallback(
     async (cfg: CacheConfig) => {
       try {
-        const res = await fetch(`${API_BASE}/session`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cfg),
-        });
-        const data = await res.json();
+        const newSessionId = await createSession(cfg);
         resetState();
-        setSessionId(data.session_id);
+        setSessionId(newSessionId);
+        setErrorMessage(null);
       } catch (err) {
         console.error('Failed to create session:', err);
+        setErrorMessage('Failed to create session. Please try again.');
       }
     },
     [setSessionId, resetState]
@@ -47,17 +51,11 @@ export default function App() {
     async (pattern: TracePattern, count: number) => {
       if (!sessionId) return;
       try {
-        await fetch(`${API_BASE}/session/${sessionId}/trace`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pattern,
-            count,
-            address_range: Math.pow(2, config.address_bits),
-          }),
-        });
+        await runTrace(sessionId, pattern, count, config.address_bits);
+        setErrorMessage(null);
       } catch (err) {
         console.error('Failed to run trace:', err);
+        setErrorMessage('Failed to run trace. Please try again.');
       }
     },
     [sessionId, config.address_bits]
@@ -66,41 +64,41 @@ export default function App() {
   const handleStartSerial = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(`${API_BASE}/session/${sessionId}/serial/start`, {
-        method: 'POST',
-      });
+      await startSerial(sessionId);
       setRunning(true);
+      setErrorMessage(null);
     } catch (err) {
       console.error('Failed to start serial:', err);
+      setErrorMessage('Failed to start serial input.');
     }
   }, [sessionId, setRunning]);
 
   const handleStopSerial = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(`${API_BASE}/session/${sessionId}/serial/stop`, {
-        method: 'POST',
-      });
+      await stopSerial(sessionId);
       setRunning(false);
+      setErrorMessage(null);
     } catch (err) {
       console.error('Failed to stop serial:', err);
+      setErrorMessage('Failed to stop serial input.');
     }
   }, [sessionId, setRunning]);
 
   const handleReset = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(`${API_BASE}/session/${sessionId}/reset`, {
-        method: 'POST',
-      });
+      await resetSession(sessionId);
+      setErrorMessage(null);
     } catch (err) {
       console.error('Failed to reset:', err);
+      setErrorMessage('Failed to reset session.');
     }
   }, [sessionId]);
 
   const handleExport = useCallback(() => {
     if (!sessionId) return;
-    window.open(`${API_BASE}/export/${sessionId}`, '_blank');
+    window.open(getExportUrl(sessionId), '_blank');
   }, [sessionId]);
 
   const handleManualAccess = useCallback(
@@ -164,6 +162,14 @@ export default function App() {
         </div>
       </header>
 
+      {errorMessage && (
+        <div className="max-w-[1920px] mx-auto px-6 pt-4">
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 text-red-300 px-4 py-2 text-sm">
+            {errorMessage}
+          </div>
+        </div>
+      )}
+
       <main className="max-w-[1920px] mx-auto px-6 py-6">
         <div className="grid grid-cols-12 gap-5">
           <div className="col-span-3">
@@ -211,7 +217,7 @@ export default function App() {
 
                 <div className="grid grid-cols-2 gap-5">
                   <CacheGrid />
-                  <HeatmapGrid />
+                  <HeatmapGrid addressBits={config.address_bits} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-5">
