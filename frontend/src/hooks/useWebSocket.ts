@@ -31,6 +31,11 @@ export function useWebSocket(sessionId: string | null) {
     if (!sessionId) return;
 
     if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+      // Prevent stale close callbacks from toggling connection state.
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onclose = null;
       wsRef.current.close();
     }
 
@@ -39,6 +44,7 @@ export function useWebSocket(sessionId: string | null) {
     const ws = new WebSocket(`${protocol}//${host}/ws/${sessionId}`);
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       setConnected(true);
       reconnectDelayRef.current = 1000;
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
@@ -53,6 +59,7 @@ export function useWebSocket(sessionId: string | null) {
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(event.data);
         if (data?.type === 'pong') {
@@ -78,6 +85,7 @@ export function useWebSocket(sessionId: string | null) {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return;
       setConnected(false);
       if (heartbeatIntervalRef.current) {
         clearInterval(heartbeatIntervalRef.current);
@@ -96,6 +104,7 @@ export function useWebSocket(sessionId: string | null) {
     };
 
     ws.onerror = () => {
+      if (wsRef.current !== ws) return;
       ws.close();
     };
 
