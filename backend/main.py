@@ -34,12 +34,12 @@ CLEANUP_INTERVAL_SECONDS = 300
 
 
 class AccessRequest(BaseModel):
-    address: int = Field(..., ge=0, le=255)
+    address: int = Field(..., ge=0)
 
 
 class WebSocketMessage(BaseModel):
     type: str
-    address: int | None = Field(default=None, ge=0, le=255)
+    address: int | None = Field(default=None, ge=0)
 
 
 def touch_session(session_id: str):
@@ -115,7 +115,10 @@ async def broadcast_to_session(session_id: str, data: dict):
 @app.post("/api/session", response_model=dict)
 async def create_new_session(config: CacheConfig):
     session_id = str(uuid.uuid4())[:8]
-    engine = CacheEngine(config)
+    try:
+        engine = CacheEngine(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     active_engines[session_id] = engine
     connected_clients[session_id] = set()
     touch_session(session_id)
@@ -145,12 +148,19 @@ async def get_session_info(session_id: str):
 
 
 @app.post("/api/session/{session_id}/access")
-async def manual_access(session_id: str, address: int = Query(..., ge=0, le=255)):
+async def manual_access(session_id: str, address: int = Query(..., ge=0)):
     if session_id not in active_engines:
         raise HTTPException(status_code=404, detail="Session not found")
 
     payload = AccessRequest(address=address)
     engine = active_engines[session_id]
+    max_address = (1 << engine.config.address_bits) - 1
+    if payload.address > max_address:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Address out of range for this session (0-{max_address})",
+        )
+
     result = engine.access(payload.address)
     state = engine.get_state()
     touch_session(session_id)
@@ -354,6 +364,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     continue
                 address = msg.address
                 engine = active_engines[session_id]
+                max_address = (1 << engine.config.address_bits) - 1
+                if address > max_address:
+                    logger.warning(
+                        "Ignoring out-of-range websocket address %s for session %s (max=%s)",
+                        address,
+                        session_id,
+                        max_address,
+                    )
+                    continue
+
                 result = engine.access(address)
                 state = engine.get_state()
 

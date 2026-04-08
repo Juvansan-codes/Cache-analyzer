@@ -1,6 +1,5 @@
 import math
 import random
-import time
 from collections import OrderedDict, deque
 from typing import List, Optional, Dict, Tuple
 from models import (
@@ -16,6 +15,12 @@ class CacheEngine:
             raise ValueError("cache_size must be a power of two")
         if not self._is_power_of_two(config.block_size):
             raise ValueError("block_size must be a power of two")
+        if config.mapping_type == MappingType.SET_ASSOCIATIVE:
+            if config.associativity > config.cache_size:
+                raise ValueError("associativity must be <= cache_size for set_associative mapping")
+            if config.cache_size % config.associativity != 0:
+                raise ValueError("cache_size must be divisible by associativity for set_associative mapping")
+
         self.num_lines = config.cache_size
         self.block_size = config.block_size
         self.associativity = config.associativity
@@ -33,6 +38,8 @@ class CacheEngine:
         self.offset_bits = max(0, int(math.log2(self.block_size))) if self.block_size > 1 else 0
         self.index_bits = max(0, int(math.log2(self.num_sets))) if self.num_sets > 1 else 0
         self.tag_bits = self.address_bits - self.index_bits - self.offset_bits
+        if self.tag_bits < 0:
+            raise ValueError("address_bits is too small for the selected cache configuration")
 
         self.cache: List[List[CacheLine]] = []
         self.lru_orders: Dict[int, OrderedDict] = {}

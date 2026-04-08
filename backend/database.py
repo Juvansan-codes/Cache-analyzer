@@ -1,6 +1,5 @@
 import aiosqlite
 import os
-import json
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -29,14 +28,19 @@ async def flush_access_logs(force: bool = False):
         batch = list(_pending_access_logs)
         _pending_access_logs.clear()
 
-    async with get_connection() as db:
-        await db.executemany(
-            """INSERT INTO access_log
-               (session_id, address, tag, set_index, hit, evicted_address, cache_line_index, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            batch,
-        )
-        await db.commit()
+    try:
+        async with get_connection() as db:
+            await db.executemany(
+                """INSERT INTO access_log
+                   (session_id, address, tag, set_index, hit, evicted_address, cache_line_index, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                batch,
+            )
+            await db.commit()
+    except Exception:
+        async with _access_log_lock:
+            _pending_access_logs[:0] = batch
+        raise
 
 async def init_db():
     async with get_connection() as db:
