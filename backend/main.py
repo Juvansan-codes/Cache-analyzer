@@ -31,6 +31,7 @@ last_activity: Dict[str, float] = {}
 logger = logging.getLogger(__name__)
 SESSION_TTL_SECONDS = 3600
 CLEANUP_INTERVAL_SECONDS = 300
+TRACE_VISUAL_DELAY_SECONDS = 0.01
 
 
 class AccessRequest(BaseModel):
@@ -101,15 +102,24 @@ app.add_middleware(
 
 
 async def broadcast_to_session(session_id: str, data: dict):
-    if session_id in connected_clients:
-        dead = set()
-        for ws in connected_clients[session_id]:
-            try:
-                await ws.send_json(data)
-            except Exception:
-                logger.exception("Failed to broadcast to websocket client for session %s", session_id)
-                dead.add(ws)
-        connected_clients[session_id] -= dead
+    clients = connected_clients.get(session_id)
+    if not clients:
+        return
+
+    sockets = list(clients)
+    results = await asyncio.gather(
+        *(ws.send_json(data) for ws in sockets),
+        return_exceptions=True,
+    )
+
+    dead = {
+        ws
+        for ws, result in zip(sockets, results)
+        if isinstance(result, Exception)
+    }
+    if dead:
+        logger.warning("Removing %s dead websocket client(s) for session %s", len(dead), session_id)
+        clients.difference_update(dead)
 
 
 @app.post("/api/session", response_model=dict)
@@ -192,10 +202,18 @@ async def run_trace(session_id: str, config: TraceConfig):
 
     touch_session(session_id)
     engine = active_engines[session_id]
+    max_range = 1 << engine.config.address_bits
+    if config.address_range > max_range:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Trace address_range exceeds session capacity (max {max_range})",
+        )
+
     generator = TraceGenerator(config)
     addresses = generator.generate_batch()
+    per_step_delay = TRACE_VISUAL_DELAY_SECONDS if config.count <= 200 else 0.0
 
-    results = []
+    processed = 0
     for addr in addresses:
         result = engine.access(addr)
         state = engine.get_state()
@@ -213,8 +231,9 @@ async def run_trace(session_id: str, config: TraceConfig):
             timestamp=time.time(),
         )
         await broadcast_to_session(session_id, event.model_dump())
-        results.append(event.model_dump())
-        await asyncio.sleep(0.05)
+        processed += 1
+        if per_step_delay > 0:
+            await asyncio.sleep(per_step_delay)
 
     final_state = engine.get_state()
     await update_session_stats(
@@ -222,7 +241,7 @@ async def run_trace(session_id: str, config: TraceConfig):
         final_state.hit_rate, final_state.miss_rate, final_state.amat
     )
 
-    return {"total": len(results), "final_state": final_state.model_dump()}
+    return {"total": processed, "final_state": final_state.model_dump()}
 
 
 @app.post("/api/session/{session_id}/serial/start")

@@ -88,4 +88,4 @@ class HeatmapCell(BaseModel):
 class TraceConfig(BaseModel):
     pattern: Literal["sequential", "random", "loop", "spatial"] = "random"
     count: int = Field(default=50, ge=1, le=1000)
-    address_range: int = Field(default=256, ge=16, le=65536)
+    address_range: int = Field(default=256, ge=16)

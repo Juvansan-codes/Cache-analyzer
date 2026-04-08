@@ -76,6 +76,12 @@ async def init_db():
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id)
             )
         """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_access_log_session_id_id ON access_log(session_id, id)"
+        )
         await db.commit()
 
 

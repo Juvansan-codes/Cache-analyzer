@@ -1,12 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useState } from 'react';
 import { useCacheStore } from './store/cacheStore';
 import { useWebSocket } from './hooks/useWebSocket';
-import CacheGrid from './components/CacheGrid';
-import MetricsPanel from './components/MetricsPanel';
-import HitMissChart from './components/HitMissChart';
-import AmatGauge from './components/AmatGauge';
-import AccessLog from './components/AccessLog';
-import HeatmapGrid from './components/HeatmapGrid';
 import ControlPanel from './components/ControlPanel';
 import { CacheConfig, TracePattern } from './types';
 import {
@@ -17,6 +11,13 @@ import {
   resetSession,
   getExportUrl,
 } from './api/cacheApi';
+
+const CacheGrid = lazy(() => import('./components/CacheGrid'));
+const MetricsPanel = lazy(() => import('./components/MetricsPanel'));
+const HitMissChart = lazy(() => import('./components/HitMissChart'));
+const AmatGauge = lazy(() => import('./components/AmatGauge'));
+const AccessLog = lazy(() => import('./components/AccessLog'));
+const HeatmapGrid = lazy(() => import('./components/HeatmapGrid'));
 
 export default function App() {
   const sessionId = useCacheStore((s) => s.sessionId);
@@ -55,7 +56,9 @@ export default function App() {
         setErrorMessage(null);
       } catch (err) {
         console.error('Failed to run trace:', err);
-        setErrorMessage('Failed to run trace. Please try again.');
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to run trace. Please try again.'
+        );
       }
     },
     [sessionId, config.address_bits]
@@ -212,7 +215,13 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <>
+              <Suspense
+                fallback={
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-slate-400 text-sm">
+                    Loading analysis panels...
+                  </div>
+                }
+              >
                 <MetricsPanel />
 
                 <div className="grid grid-cols-2 gap-5">
@@ -226,7 +235,7 @@ export default function App() {
                 </div>
 
                 <AccessLog />
-              </>
+              </Suspense>
             )}
           </div>
         </div>

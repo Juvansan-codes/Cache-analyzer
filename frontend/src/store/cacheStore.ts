@@ -4,9 +4,6 @@ import {
   CacheState,
   CacheUpdateEvent,
   AccessLogEntry,
-  HeatmapCell,
-  MappingType,
-  ReplacementPolicy,
 } from '../types';
 
 interface CacheStore {
@@ -99,26 +96,28 @@ export const useCacheStore = create<CacheStore>((set, get) => ({
         };
       }
 
-      const newLog = event.access
-        ? [
-            {
-              address: event.access.address,
-              tag: event.access.tag,
-              index: event.access.index,
-              hit: event.access.hit,
-              evicted_address: event.access.evicted_address,
-              cache_line_index: event.access.cache_line_index,
-              timestamp: event.timestamp || Date.now(),
-            },
-            ...s.accessLog.slice(0, 99),
-          ]
-        : s.accessLog;
+      if (!event.access) {
+        return {
+          state: newState,
+        };
+      }
+
+      const newLog = [
+        {
+          address: event.access.address,
+          tag: event.access.tag,
+          index: event.access.index,
+          hit: event.access.hit,
+          evicted_address: event.access.evicted_address,
+          cache_line_index: event.access.cache_line_index,
+          timestamp: event.timestamp || Date.now(),
+        },
+        ...s.accessLog.slice(0, 99),
+      ];
 
       const newHeatmap = { ...s.heatmap };
-      if (event.access) {
-        const addr = event.access.address;
-        newHeatmap[addr] = (newHeatmap[addr] || 0) + 1;
-      }
+      const addr = event.access.address;
+      newHeatmap[addr] = (newHeatmap[addr] || 0) + 1;
 
       return {
         state: newState,

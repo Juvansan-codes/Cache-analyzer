@@ -5,29 +5,55 @@ interface HeatmapGridProps {
   addressBits: number;
 }
 
+const MAX_RENDER_CELLS = 4096;
+
 export default function HeatmapGrid({ addressBits }: HeatmapGridProps) {
   const heatmap = useCacheStore((s) => s.heatmap);
 
   const addressSpaceSize = Math.pow(2, addressBits);
-  const gridSize = Math.ceil(Math.sqrt(addressSpaceSize));
+  const bucketCount = Math.min(addressSpaceSize, MAX_RENDER_CELLS);
+  const bucketWidth = Math.max(1, Math.ceil(addressSpaceSize / bucketCount));
+  const gridSize = Math.ceil(Math.sqrt(bucketCount));
 
   const { cells, maxCount } = useMemo(() => {
     let max = 0;
-    const cellData: { address: number; count: number; x: number; y: number }[] = [];
+    const bucketHits = new Array<number>(bucketCount).fill(0);
 
-    for (let i = 0; i < addressSpaceSize; i++) {
-      const count = heatmap[i] || 0;
-      if (count > max) max = count;
+    for (const [addrKey, count] of Object.entries(heatmap)) {
+      const addr = Number(addrKey);
+      if (!Number.isFinite(addr) || addr < 0 || addr >= addressSpaceSize) {
+        continue;
+      }
+
+      const bucketIndex = Math.min(bucketCount - 1, Math.floor(addr / bucketWidth));
+      bucketHits[bucketIndex] += count;
+      if (bucketHits[bucketIndex] > max) {
+        max = bucketHits[bucketIndex];
+      }
+    }
+
+    const cellData: {
+      bucketStart: number;
+      bucketEnd: number;
+      count: number;
+      x: number;
+      y: number;
+    }[] = [];
+
+    for (let i = 0; i < bucketCount; i++) {
+      const bucketStart = i * bucketWidth;
+      const bucketEnd = Math.min(addressSpaceSize - 1, ((i + 1) * bucketWidth) - 1);
       cellData.push({
-        address: i,
-        count,
+        bucketStart,
+        bucketEnd,
+        count: bucketHits[i],
         x: i % gridSize,
         y: Math.floor(i / gridSize),
       });
     }
 
     return { cells: cellData, maxCount: max };
-  }, [heatmap, addressSpaceSize, gridSize]);
+  }, [heatmap, addressSpaceSize, bucketCount, bucketWidth, gridSize]);
 
   const getColor = (count: number): string => {
     if (count === 0) return 'rgba(30, 41, 59, 0.8)';
@@ -46,7 +72,7 @@ export default function HeatmapGrid({ addressBits }: HeatmapGridProps) {
           Memory Heatmap
         </h2>
         <span className="text-xs text-slate-500 font-mono">
-          {gridSize}×{gridSize} (0–{addressSpaceSize - 1})
+          {gridSize}x{gridSize} buckets={bucketCount} range=0-{addressSpaceSize - 1}
         </span>
       </div>
 
@@ -58,14 +84,14 @@ export default function HeatmapGrid({ addressBits }: HeatmapGridProps) {
         >
           {cells.map((cell) => (
             <rect
-              key={cell.address}
+              key={cell.bucketStart}
               x={cell.x}
               y={cell.y}
               width={1}
               height={1}
               fill={getColor(cell.count)}
             >
-              <title>{`addr: ${cell.address} | hits: ${cell.count}`}</title>
+              <title>{`addr: ${cell.bucketStart}-${cell.bucketEnd} | hits: ${cell.count}`}</title>
             </rect>
           ))}
         </svg>
